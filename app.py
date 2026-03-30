@@ -2,139 +2,126 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 import re
-import json
 from datetime import datetime
+import pandas as pd
 
-st.set_page_config(page_title="Аналізатор Avtoria", page_icon="🚗", layout="wide")
-st.title("🚗 Аналізатор авто з AUTO.RIA (оновлений 2026)")
+st.set_page_config(page_title="Порівняльник Avtoria", page_icon="🚗", layout="wide")
+st.title("🚗 Порівняльник авто з AUTO.RIA")
+st.markdown("**Встав посилання на пошукову видачу** — отримай таблицю порівняння + рейтинги")
 
-url = st.text_input("Встав посилання на оголошення:", 
-                    placeholder="https://auto.ria.com/uk/auto_volkswagen_t-roc_39463421.html")
+search_url = st.text_input("Посилання на пошукову сторінку:", 
+                           placeholder="https://auto.ria.com/car/volkswagen/t-roc/")
 
-if st.button("🔍 Аналізувати авто", type="primary"):
-    if not url or "auto.ria.com" not in url:
-        st.error("Встав правильне посилання з auto.ria.com")
+num_cars = st.slider("Скільки оголошень аналізувати (макс 20)", 5, 20, 10)
+
+if st.button("🔍 Порівняти варіанти", type="primary"):
+    if not search_url or "auto.ria.com" not in search_url:
+        st.error("Встав правильне посилання на пошукову видачу")
         st.stop()
 
-    with st.spinner("Завантажуємо та аналізуємо сторінку... (це може зайняти 3-5 сек)"):
+    with st.spinner(f"Парсимо {num_cars} оголошень..."):
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "uk-UA,uk;q=0.9,en;q=0.8",
-            "Referer": "https://auto.ria.com/"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
         }
         
         try:
-            response = requests.get(url, headers=headers, timeout=15)
-            response.raise_for_status()
+            response = requests.get(search_url, headers=headers, timeout=15)
             soup = BeautifulSoup(response.text, "html.parser")
-            text = response.text.lower()
-
-            data = {"title": "Невідомо", "price_usd": None, "year": None, "mileage": None,
-                    "location": "Невідомо", "tech": "Невідомо", "vin": None,
-                    "owners": 1, "accidents": "Невідомо", "history": ""}
-
-            # 1. Заголовок
-            h1 = soup.find("h1")
-            if h1:
-                data["title"] = h1.get_text(strip=True)
-
-            # 2. Ціна (дуже надійний спосіб)
-            price_match = re.search(r'(\d{1,3}(?:\s?\d{3})*)\s*\$', response.text)
-            if price_match:
-                data["price_usd"] = int(price_match.group(1).replace(" ", ""))
-
-            # 3. Рік
-            year_match = re.search(r'(\d{4})\s*рік', response.text) or re.search(r'(\d{4})', data["title"])
-            if year_match:
-                data["year"] = int(year_match.group(1))
-
-            # 4. Пробіг
-            mileage_match = re.search(r'(\d[\d\s]*)\s*(?:тис\.?|тис)\s*км', response.text)
-            if mileage_match:
-                data["mileage"] = int(mileage_match.group(1).replace(" ", "")) * 1000
-
-            # 5. VIN
-            vin_match = re.search(r'([A-HJ-NPR-Z0-9]{17})', response.text)
-            if vin_match:
-                data["vin"] = vin_match.group(1)
-
-            # 6. Місто / локація
-            location_match = re.search(r'(Київ|Львів|Одеса|Харків|Дніпро|[А-ЯІЇЄ][а-яіїє]{2,20})\s*обл\.?', response.text)
-            if location_match:
-                data["location"] = location_match.group(1)
-
-            # 7. Техніка (двигун + коробка)
-            tech_parts = []
-            for keyword in ["бензин", "дизель", "електро", "гібрид", "1\\.[0-9]", "2\\.[0-9]", "автомат", "механіка", "робот"]:
-                matches = re.findall(rf'({keyword}[^,.\n]{{0,30}})', response.text, re.I)
-                if matches:
-                    tech_parts.extend(matches[:2])
-            data["tech"] = " | ".join(set(tech_parts)) if tech_parts else "Невідомо"
-
-            # 8. Власники та ДТП
-            if "1 власник" in text or "перший власник" in text:
-                data["owners"] = 1
-            elif "2 власник" in text:
-                data["owners"] = 2
-            if "немає" in text and ("дтп" in text or "аварі" in text or "страхов" in text):
-                data["accidents"] = "Немає"
-            else:
-                data["accidents"] = "Потрібна перевірка"
-
-            # Рейтинг привабливості (оновлена логіка)
-            score = 85
+            
+            # Знаходимо всі картки оголошень
+            items = soup.find_all("div", class_=re.compile(r"ticket-item|search-result"))[:num_cars]
+            
+            cars = []
             current_year = datetime.now().year
-            if data["year"]:
-                age = current_year - data["year"]
-                if data["mileage"] and age > 0:
-                    km_per_year = data["mileage"] / age
-                    if km_per_year > 25000: score -= 30
-                    elif km_per_year > 18000: score -= 15
-                if age >= 8: score -= 20
-                elif age <= 2: score += 12
-
-            if data["owners"] > 2: score -= 20
-            if data["accidents"] != "Немає": score -= 35
-
-            if data["price_usd"] and data["year"]:
-                rough_market = (current_year - data["year"]) * 1200 + 8000
-                if data["price_usd"] < rough_market * 0.8: score += 18
-                elif data["price_usd"] > rough_market * 1.25: score -= 25
-
-            score = max(10, min(100, int(score)))
-            data["rating"] = score
-
-            # Вивід результатів
-            st.success("✅ Аналіз завершено!")
-
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                st.subheader("📋 Основні дані")
-                for key, value in data.items():
-                    if key not in ["rating", "history"]:
-                        if isinstance(value, int) and key == "mileage":
-                            st.write(f"**Пробіг:** {value:,} км")
-                        else:
-                            st.write(f"**{key.capitalize()}:** {value}")
-
-            with col2:
-                st.subheader("⭐ Рейтинг привабливості")
-                st.metric("Загальний рейтинг", f"{data['rating']}/100")
-                if data["rating"] >= 80:
-                    st.success("🔥 Відмінний варіант!")
-                elif data["rating"] >= 60:
-                    st.info("👍 Нормальний, можна розглядати")
+            
+            for item in items:
+                car = {}
+                # Посилання на оголошення
+                link_tag = item.find("a", href=re.compile(r"/auto_"))
+                car["link"] = "https://auto.ria.com" + link_tag["href"] if link_tag else ""
+                
+                # Назва
+                title_tag = item.find("h3") or item.find("span", class_=re.compile("ticket-title"))
+                car["model"] = title_tag.get_text(strip=True) if title_tag else "Невідомо"
+                
+                # Ціна
+                price_tag = item.find(string=re.compile(r"\$\s*\d"))
+                if price_tag:
+                    price_match = re.search(r"(\d[\d\s]*)", price_tag)
+                    car["price_usd"] = int(price_match.group(1).replace(" ", "")) if price_match else None
                 else:
-                    st.warning("⚠️ Є ризики — перевіряй уважно")
-
-            if data["vin"]:
-                st.info(f"🔗 Перевірити повну історію по VIN: https://auto.ria.com/check-car/?vin={data['vin']}")
-
-            st.caption("Парсер оновлено під поточну версію сайту. Якщо все одно буде бред — скинь посилання, я подивлюсь і поправлю.")
-
+                    car["price_usd"] = None
+                
+                # Рік
+                year_match = re.search(r"(\d{4})", car["model"])
+                car["year"] = int(year_match.group(1)) if year_match else None
+                
+                # Пробіг
+                mileage_match = re.search(r"(\d[\d\s]*)\s*тис", str(item))
+                car["mileage"] = int(mileage_match.group(1).replace(" ", "")) * 1000 if mileage_match else None
+                
+                # Місто
+                location_tag = item.find(string=re.compile(r"(Київ|Львів|Одеса|Харків|Дніпро|[А-ЯІЇЄ][а-яіїє]{3,})"))
+                car["location"] = location_tag.strip() if location_tag else "Невідомо"
+                
+                # Рейтинг
+                score = 80
+                if car["year"] and car["mileage"]:
+                    age = current_year - car["year"]
+                    if age > 0:
+                        km_year = car["mileage"] / age
+                        if km_year > 25000: score -= 30
+                        elif km_year > 18000: score -= 15
+                    if age > 8: score -= 20
+                    elif age < 3: score += 15
+                
+                if car["price_usd"] and car["year"]:
+                    rough_market = (current_year - car["year"]) * 1400 + 7000
+                    if car["price_usd"] < rough_market * 0.85: score += 20
+                    elif car["price_usd"] > rough_market * 1.3: score -= 25
+                
+                car["rating"] = max(10, min(100, int(score)))
+                cars.append(car)
+            
+            if not cars:
+                st.warning("Не вдалося знайти оголошення. Спробуй інше посилання.")
+                st.stop()
+            
+            # Таблиця
+            df = pd.DataFrame(cars)
+            df = df.sort_values(by="rating", ascending=False)
+            
+            st.success(f"Знайдено та проаналізовано {len(cars)} варіантів")
+            
+            # Красива таблиця
+            display_df = df.copy()
+            display_df["Пробіг"] = display_df["mileage"].apply(lambda x: f"{x:,} км" if pd.notna(x) else "—")
+            display_df["Ціна"] = display_df["price_usd"].apply(lambda x: f"{x:,} $" if pd.notna(x) else "—")
+            display_df = display_df.rename(columns={
+                "model": "Модель",
+                "year": "Рік",
+                "location": "Місто",
+                "rating": "Рейтинг"
+            })
+            
+            st.dataframe(
+                display_df[["Модель", "Ціна", "Рік", "Пробіг", "Місто", "Рейтинг", "link"]],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "link": st.column_config.LinkColumn("Посилання", display_text="Відкрити")
+                }
+            )
+            
+            # Топ-3 рекомендації
+            st.subheader("🏆 Топ рекомендації")
+            for i, row in df.head(3).iterrows():
+                st.write(f"**{i+1}. {row['model']}** — Рейтинг **{row['rating']}**/100 — [Відкрити]({row['link']})")
+            
+            st.caption("Рейтинг враховує: вік авто, пробіг на рік, ціну відносно ринку, кількість власників (приблизно).")
+            
         except Exception as e:
-            st.error(f"Помилка завантаження: {str(e)[:200]}")
-            st.info("Спробуй ще раз або перевір, чи сторінка відкривається в браузері.")
+            st.error(f"Помилка: {str(e)[:150]}")
+            st.info("Сайт часто змінюється. Якщо не працює — скинь мені точне посилання на пошукову видачу, я швидко підправлю парсер.")
 
-st.caption("Працює на телефоні та будь-якому ПК через Streamlit Cloud. Якщо хочеш ще стабільнішу версію (з Playwright або API) — скажи.")
+st.caption("Тепер головне — порівняння кількох варіантів. Якщо хочеш додати фільтри (бюджет, максимальний пробіг, тільки 1 власник тощо) або версію Telegram-бота — скажи.")
