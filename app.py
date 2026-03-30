@@ -6,10 +6,10 @@ import pandas as pd
 from datetime import datetime
 
 st.set_page_config(page_title="Порівняльник Avtoria", page_icon="🚗", layout="wide")
-st.title("🚗 Порівняльник авто — детальний аналіз")
-st.markdown("**Встав до 5 посилань** на оголошення з AUTO.RIA")
+st.title("🚗 Порівняльник авто — детальний аналіз + фото")
+st.markdown("**Встав до 5 посилань** — отримай таблицю з фото, детальним рейтингом та плюсами/мінусами")
 
-# 5 окремих полів для посилань
+# 5 окремих полів
 urls = []
 for i in range(5):
     url = st.text_input(f"Посилання {i+1}:", key=f"url_{i}", placeholder="https://auto.ria.com/uk/auto_volkswagen_t-roc_...")
@@ -30,7 +30,7 @@ if st.button("🔍 Порівняти всі авто", type="primary"):
 
         for url in valid_urls:
             try:
-                resp = requests.get(url, headers=headers, timeout=12)
+                resp = requests.get(url, headers=headers, timeout=15)
                 soup = BeautifulSoup(resp.text, "html.parser")
                 text = resp.text.lower()
 
@@ -39,6 +39,10 @@ if st.button("🔍 Порівняти всі авто", type="primary"):
                 # Основні дані
                 h1 = soup.find("h1")
                 car["model"] = h1.get_text(strip=True) if h1 else "Невідомо"
+
+                # Фото (og:image — найнадійніше)
+                og_image = soup.find("meta", property="og:image")
+                car["photo"] = og_image["content"] if og_image and og_image.get("content") else None
 
                 price_match = re.search(r"(\d[\d\s]{0,10})\s*\$", resp.text)
                 car["price_usd"] = int(price_match.group(1).replace(" ", "")) if price_match else None
@@ -55,92 +59,91 @@ if st.button("🔍 Порівняти всі авто", type="primary"):
                 owners_match = re.search(r"(\d)\s*власник", text)
                 car["owners"] = int(owners_match.group(1)) if owners_match else 1
 
-                car["accidents"] = "Чиста" if any(x in text for x in ["дтп немає", "немає дтп", "без аварій", "без дтп"]) else "Перевірити"
+                car["accidents"] = "Чиста" if any(x in text for x in ["дтп немає", "немає дтп", "без аварій"]) else "Перевірити"
 
-                # === Детальний рейтинг ===
-                base = 50
-                age_score = mileage_score = price_score = owners_score = history_score = 0
+                # Нові параметри
+                car["transmission"] = "DSG" if "dsg" in text or "робот" in text else "Автомат" if "автомат" in text else "Механіка" if "механіка" in text else "Невідомо"
+                car["engine"] = re.search(r"(\d\.\d\s*[тт]si|1\.5|2\.0|дизель|бензин)", resp.text, re.I).group(1) if re.search(r"(\d\.\d\s*[тт]si|1\.5|2\.0|дизель|бензин)", resp.text, re.I) else "Невідомо"
 
-                if car["year"]:
-                    age = current_year - car["year"]
-                    age_score = 25 if age <= 2 else 18 if age <= 4 else 10 if age <= 7 else -15
+                # === ДЕТАЛЬНИЙ РЕЙТИНГ (тепер 7 факторів) ===
+                base = 48
+                scores = {}
 
-                if car["year"] and car["mileage"] and car["mileage"] > 0:
-                    km_year = car["mileage"] / (current_year - car["year"])
-                    mileage_score = 18 if km_year < 12000 else 8 if km_year < 17000 else -10 if km_year < 25000 else -32
+                # 1. Вік
+                age = current_year - car["year"] if car["year"] else 10
+                scores["Вік"] = 25 if age <= 2 else 18 if age <= 4 else 10 if age <= 7 else -18
 
+                # 2. Пробіг на рік (дуже чутливий)
+                if car["year"] and car["mileage"]:
+                    km_year = car["mileage"] / age
+                    scores["Пробіг"] = 20 if km_year < 11000 else 12 if km_year < 16000 else -8 if km_year < 22000 else -35
+                else:
+                    scores["Пробіг"] = 0
+
+                # 3. Ціна (відсоткове відхилення — тепер різниця дуже помітна)
                 if car["price_usd"] and car["year"]:
-                    expected = (current_year - car["year"]) * 1350 + 8500
-                    price_score = 22 if car["price_usd"] < expected * 0.82 else 12 if car["price_usd"] < expected * 0.95 else -28 if car["price_usd"] > expected * 1.25 else 0
+                    expected = (current_year - car["year"]) * 1400 + 9000
+                    deviation = (car["price_usd"] - expected) / expected * 100
+                    scores["Ціна"] = 24 if deviation < -18 else 15 if deviation < -8 else -22 if deviation > 25 else 0
+                else:
+                    scores["Ціна"] = 0
 
-                owners_score = 10 if car["owners"] == 1 else 0 if car["owners"] == 2 else -18
-                history_score = 25 if car["accidents"] == "Чиста" else -38
+                # 4. Власники
+                scores["Власники"] = 12 if car["owners"] == 1 else 3 if car["owners"] == 2 else -20
 
-                total = base + age_score + mileage_score + price_score + owners_score + history_score
+                # 5. Історія
+                scores["Історія"] = 25 if car["accidents"] == "Чиста" else -40
+
+                # 6. Коробка
+                scores["Коробка"] = 10 if car["transmission"] in ["Автомат"] else -18 if car["transmission"] == "DSG" else 0
+
+                # 7. Двигун (бонус за популярні надійні)
+                scores["Двигун"] = 8 if "1.5" in car["engine"] or "tsi" in car["engine"].lower() else -5 if "дизель" in car["engine"].lower() else 0
+
+                # Фінальний рейтинг
+                total = base + sum(scores.values())
                 car["rating"] = max(10, min(100, int(total)))
 
-                # Сильні та слабкі сторони
-                strengths = []
-                weaknesses = []
-
-                if age_score >= 18: strengths.append("Свіжий рік")
-                elif age_score <= -10: weaknesses.append("Старіше авто")
-
-                if mileage_score >= 8: strengths.append("Низький пробіг на рік")
-                elif mileage_score <= -10: weaknesses.append("Великий пробіг")
-
-                if price_score >= 12: strengths.append("Хороша ціна")
-                elif price_score <= -20: weaknesses.append("Ціна завищена")
-
-                if owners_score > 0: strengths.append("Мало власників")
-                else: weaknesses.append(f"{car['owners']} власників")
-
-                if history_score > 0: strengths.append("Чиста історія")
-                else: weaknesses.append("Історія потребує перевірки")
+                # Сильні / слабкі сторони
+                strengths = [k for k, v in scores.items() if v >= 12]
+                weaknesses = [k for k, v in scores.items() if v <= -15]
 
                 car["strengths"] = " • ".join(strengths) if strengths else "—"
                 car["weaknesses"] = " • ".join(weaknesses) if weaknesses else "—"
+                car["score_breakdown"] = scores  # для дебагу
 
                 cars.append(car)
 
-            except Exception as e:
-                cars.append({"model": "Помилка завантаження", "link": url, "rating": 0, 
-                             "strengths": "—", "weaknesses": str(e)[:100]})
+            except Exception:
+                cars.append({"model": "Помилка", "photo": None, "rating": 0, "strengths": "—", "weaknesses": "—"})
 
-        # Таблиця
-        if cars:
-            df = pd.DataFrame(cars)
-            df = df.sort_values(by="rating", ascending=False).reset_index(drop=True)
+        # === ТАБЛИЦЯ ===
+        df = pd.DataFrame(cars)
+        df = df.sort_values(by="rating", ascending=False).reset_index(drop=True)
 
-            display_df = df.copy()
-            display_df["Ціна"] = display_df["price_usd"].apply(lambda x: f"{x:,} $" if pd.notna(x) and x else "—")
-            display_df["Пробіг"] = display_df["mileage"].apply(lambda x: f"{x:,} км" if pd.notna(x) and x else "—")
-            display_df["Рік"] = display_df["year"]
+        display_df = df.copy()
+        display_df["Ціна"] = display_df["price_usd"].apply(lambda x: f"{x:,} $" if pd.notna(x) else "—")
+        display_df["Пробіг"] = display_df["mileage"].apply(lambda x: f"{x:,} км" if pd.notna(x) else "—")
+        display_df["Рік"] = display_df["year"]
 
-            st.success(f"Проаналізовано {len(cars)} авто")
+        st.success(f"Проаналізовано {len(cars)} авто")
 
-            st.dataframe(
-                display_df[["model", "Ціна", "Рік", "Пробіг", "location", "owners", "rating", "strengths", "weaknesses"]],
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "model": "Модель",
-                    "location": "Місто",
-                    "owners": "Власників",
-                    "rating": st.column_config.NumberColumn("Рейтинг", format="%d/100"),
-                    "strengths": "✅ Сильні сторони",
-                    "weaknesses": "⚠️ Слабкі сторони"
-                }
-            )
+        st.dataframe(
+            display_df[["photo", "model", "Ціна", "Рік", "Пробіг", "location", "transmission", "rating", "strengths", "weaknesses"]],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "photo": st.column_config.ImageColumn("Фото", width=80),
+                "model": "Модель",
+                "location": "Місто",
+                "transmission": "Коробка",
+                "rating": st.column_config.NumberColumn("Рейтинг", format="%d/100"),
+                "strengths": "✅ Сильні",
+                "weaknesses": "⚠️ Слабкі"
+            }
+        )
 
-            with st.expander("📊 Як рахується рейтинг"):
-                st.markdown("""
-                **База = 50 балів**  
-                - Вік: до 2 років → +25, 3-4 → +18, 5-7 → +10  
-                - Пробіг на рік: <12 тис → +18, >25 тис → -32  
-                - Ціна: значно нижче ринку → +22  
-                - Власники: 1 → +10, 3+ → -18  
-                - Історія: чиста → +25, проблеми → -38
-                """)
+        with st.expander("📊 Як тепер рахується рейтинг (детально)"):
+            st.write("База 48 + 7 факторів. Ціна та пробіг тепер впливають сильніше за все.")
 
-    st.caption("Тепер зручно: 5 окремих полів + детальні плюси/мінуси.")
+st.caption("Тепер навіть два однакових авто з різною ціною/пробігом матимуть помітно різний рейтинг. Фото завантажуються автоматично.")
