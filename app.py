@@ -7,7 +7,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Порівняльник Avtoria", page_icon="🚗", layout="wide")
 st.title("🚗 Порівняльник авто — точний рейтинг")
-st.markdown("**Встав до 5 посилань** — нова формула з кращою чутливістю до пробігу та ціни")
+st.markdown("**Встав до 5 посилань** — рейтинг + прямі посилання на оголошення")
 
 urls = []
 for i in range(5):
@@ -35,7 +35,7 @@ if st.button("🔍 Порівняти всі авто", type="primary"):
                 text = resp.text.lower()
                 full_text = resp.text
 
-                car = {"link": url}
+                car = {"link": url}   # зберігаємо посилання
 
                 h1 = soup.find("h1")
                 car["model"] = h1.get_text(strip=True) if h1 else "Невідомо"
@@ -57,35 +57,27 @@ if st.button("🔍 Порівняти всі авто", type="primary"):
 
                 car["accidents"] = "Чиста" if any(x in text for x in ["дтп немає", "немає дтп", "без аварій"]) else "Перевірити"
 
-                # === НОВА ТОЧНА ФОРМУЛА ===
+                # === ТОЧНА ФОРМУЛА РЕЙТИНГУ ===
                 base = 45
                 age = current_year - car["year"] if car["year"] else 15
 
-                # 1. Вік (сильніше для дуже нових авто)
                 age_score = max(-25, 32 - age * 4.5)
 
-                # 2. Пробіг на рік (дуже чутливий, особливо для нових авто)
                 if car["year"] and car["mileage"] and age > 0:
                     km_per_year = car["mileage"] / age
-                    # Для авто 2024-2025 пробіг карається сильніше
-                    sensitivity = 0.0035 if age <= 2 else 0.0028
+                    sensitivity = 0.0038 if age <= 2 else 0.0029
                     mileage_score = max(-48, 38 - (km_per_year - 7000) * sensitivity)
                 else:
                     mileage_score = 0
 
-                # 3. Ціна (реалістичніше порівняння)
                 if car["price_usd"] and car["year"]:
-                    # Очікувана ціна трохи скоригована для T-Roc
                     expected = (current_year - car["year"]) * 1350 + 10500
                     deviation = ((car["price_usd"] - expected) / expected) * 100
                     price_score = max(-35, 33 - deviation * 1.05)
                 else:
                     price_score = 0
 
-                # 4. Власники
                 owners_score = max(-25, 18 - (car["owners"] - 1) * 14)
-
-                # 5. Історія
                 history_score = 30 if car["accidents"] == "Чиста" else -42
 
                 total = base + age_score + mileage_score + price_score + owners_score + history_score
@@ -112,8 +104,10 @@ if st.button("🔍 Порівняти всі авто", type="primary"):
                 cars.append(car)
 
             except:
-                cars.append({"model": "Помилка", "photo": None, "rating": 0, "strengths": "—", "weaknesses": "—"})
+                cars.append({"model": "Помилка", "photo": None, "link": url, "rating": 0, 
+                             "strengths": "—", "weaknesses": "—"})
 
+        # Таблиця з посиланням
         df = pd.DataFrame(cars)
         df = df.sort_values(by="rating", ascending=False).reset_index(drop=True)
 
@@ -125,7 +119,7 @@ if st.button("🔍 Порівняти всі авто", type="primary"):
         st.success(f"Проаналізовано {len(cars)} авто")
 
         st.dataframe(
-            display_df[["photo", "model", "Ціна", "Рік", "Пробіг", "owners", "rating", "strengths", "weaknesses"]],
+            display_df[["photo", "model", "Ціна", "Рік", "Пробіг", "owners", "rating", "strengths", "weaknesses", "link"]],
             use_container_width=True,
             hide_index=True,
             column_config={
@@ -134,16 +128,15 @@ if st.button("🔍 Порівняти всі авто", type="primary"):
                 "owners": "Власників",
                 "rating": st.column_config.NumberColumn("Рейтинг", format="%d/100"),
                 "strengths": "✅ Сильні сторони",
-                "weaknesses": "⚠️ Слабкі сторони"
+                "weaknesses": "⚠️ Слабкі сторони",
+                "link": st.column_config.LinkColumn("Посилання на оголошення", display_text="Перейти →")
             }
         )
 
-        with st.expander("📊 Нова формула рейтингу"):
+        with st.expander("📊 Як рахується рейтинг"):
             st.markdown("""
-            - База = 45  
-            - Пробіг став **дуже чутливим** (особливо для авто 2024-2025)  
-            - Ціна тепер порівнюється реалістичніше  
-            - Різниця між 3000 км і 10000 км повинна бути помітною
+            База 45 + чутливі коефіцієнти по пробігу та ціні.  
+            Різниця між 3000 км і 10000 км повинна бути помітною.
             """)
 
-st.caption("Спробуй з тими самими 5 посиланнями. Якщо рейтинги все ще схожі — скинь скріншот таблиці, і я відразу підкоригую коефіцієнти.")
+st.caption("Тепер у таблиці є пряме посилання на кожне оголошення.")
